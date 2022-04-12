@@ -11,6 +11,7 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <sys/stat.h>
 #include "log.h"
 #include "il2cpp-tabledefs.h"
 #include "il2cpp-class.h"
@@ -23,6 +24,38 @@
 
 static void *il2cpp_handle = nullptr;
 static uint64_t il2cpp_base = 0;
+
+typedef struct stat Stat;
+
+static void do_mkdir(const char* path, mode_t mode)
+{
+    Stat            st;
+
+    if (stat(path, &st) != 0)
+    {
+        /* Directory does not exist. EEXIST for race condition */
+        char tmp[256];
+        char* p = NULL;
+        size_t len;
+
+        snprintf(tmp, sizeof(tmp), "%s", path);
+        len = strlen(tmp);
+        if (tmp[len - 1] == '/')
+            tmp[len - 1] = 0;
+        for (p = tmp + 1; *p; p++)
+            if (*p == '/') {
+                *p = 0;
+                mkdir(tmp, S_IRWXU);
+                *p = '/';
+            }
+        mkdir(tmp, S_IRWXU);
+    }
+    else if (!S_ISDIR(st.st_mode))
+    {
+        errno = ENOTDIR;
+    }
+}
+
 
 int getIndex(std::vector<std::string> v, std::string k) {
     auto it = std::find(v.begin(), v.end(), k);
@@ -271,7 +304,23 @@ void dump_type(const Il2CppType *type, const char* outDir) {
         namespace_vec.push_back(item);
     }
 
-    auto outPath = std::string(outDir).append("/").append(namespace_).append("/").append(il2cpp_class_get_name(klass)).append(".h");
+    std::string outPath;
+
+    LOGI("Namespaces: %s", namespace_);
+
+    if (std::string(namespace_).empty()) {
+        outPath = std::string(outDir).append("/").append(il2cpp_class_get_name(klass)).append(".h");
+        do_mkdir(std::string(outDir).append("/").c_str(), 0);
+    }
+    else {
+        std::string str = std::string(namespace_);
+        str = str.replace(str.begin(), str.end(), '.', '/');
+        outPath = std::string(outDir).append("/").append(str).append("/").append(il2cpp_class_get_name(klass)).append(".h");
+        do_mkdir(std::string(outDir).append("/").append(str).c_str(), 0);
+    }
+
+	LOGI("Generarting %s", outPath.c_str());
+
     std::ofstream out(outPath);
 
     out << "#pragma once" << "\n";
@@ -375,7 +424,7 @@ void il2cpp_dump(void *handle, char *outDir) {
             for (int j = 0; j < classCount; ++j) {
                 auto klass = il2cpp_image_get_class(image, j);
                 auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
-                dump_type(type, std::string(outDir).append("/files/sdk/").c_str());
+                dump_type(type, std::string(outDir).append("/files/SDK/Includes").c_str());
             }
         }
     }
@@ -425,9 +474,7 @@ void il2cpp_dump(void *handle, char *outDir) {
             for (int j = 0; j < reflectionTypes->max_length; ++j) {
                 auto klass = il2cpp_class_from_system_type((Il2CppReflectionType*)items[j]);
                 auto type = il2cpp_class_get_type(klass);
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
-                dump_type(type, std::string(outDir).append("/files/sdk/").c_str());
+                dump_type(type, std::string(outDir).append("/files/SDK/Includes").c_str());
             }
         }
     }
