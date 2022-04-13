@@ -27,8 +27,8 @@ int isGame(JNIEnv *env, jstring appDataDir) {
     }
     if (strcmp(package_name, GamePackageName) == 0) {
         LOGI("detect game: %s", package_name);
-        game_data_dir = new char[strlen(app_data_dir) + 1];
-        strcpy(game_data_dir, app_data_dir);
+        game_data_dir = new char[strlen(package_name) + 23];
+        sprintf(game_data_dir, "/sdcard/Android/data/%s", package_name);
         env->ReleaseStringUTFChars(appDataDir, app_data_dir);
         return 1;
     } else {
