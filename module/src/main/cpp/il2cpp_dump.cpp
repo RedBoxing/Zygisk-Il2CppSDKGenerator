@@ -124,7 +124,8 @@ uint64_t get_module_base(const char *module_name) {
     return addr;
 }
 
-std::string parseType(const char* type) {
+std::string parseType(const char* _type) {
+    std::string type = std::string(_type);
     if (type == "Void") {
         return "void";
     }
@@ -132,20 +133,46 @@ std::string parseType(const char* type) {
         return "Il2CppString*";
     }
     else if (type == "Int32") {
-        return "int";
+        return "int32_t";
+    } 
+    else if (type == "Int64") {
+        return "int64_t";
+    }
+    else if (type == "UInt32") {
+        return "uint32_t";
+    }
+    else if (type == "UInt64") {
+        return "uint64_t";
     }
     else if (type == "Boolean") {
         return "bool";
     }
     else if (type == "Int32[]") {
-        return "int*";
+        return "int32_t*";
+    }
+    else if (type == "Int64[]") {
+        return "int64_t*";
+    }
+    else if (type == "UInt32[]") {
+        return "uint32_t*";
+    }
+    else if (type == "UInt64[]") {
+        return "uint64_t*";
     }
     else if (type == "String[]") {
         return "Il2CppString**";
     }
     else {
-        return "void*";
+        return "Il2CppObject*";
     }
+}
+
+std::string formatName(std::string name) {
+	name.erase(std::remove(name.begin(), name.end(), '<'), name.end());
+    name.erase(std::remove(name.begin(), name.end(), '.'), name.end());	
+	std::replace(name.begin(), name.end(), '>', '_');
+	
+    return name;
 }
 
 void dump_method(Il2CppClass* klass, std::ofstream& out) {
@@ -160,37 +187,40 @@ void dump_method(Il2CppClass* klass, std::ofstream& out) {
 
 	int namespace_count = (int) namespace_vec.size();
 	
-    while (auto method = il2cpp_class_get_methods(klass, &iter)) {
-        /*if (method->methodPointer) {
-            out << "\tvoid " << il2cpp_method_get_name(method) << "() {";
-            out << "\t\t" <<
-
-                outPut << "\t// RVA: 0x";
-            outPut << std::hex << (uint64_t)method->methodPointer - il2cpp_base;
-            outPut << " VA: 0x";
-            outPut << std::hex << (uint64_t)method->methodPointer;
-        }
-        else {
-            outPut << "\t// RVA: 0x VA: 0x0";
-        }*/
-     
+    while (auto method = il2cpp_class_get_methods(klass, &iter)) {     
         uint32_t iflags = 0;
         auto flags = il2cpp_method_get_flags(method, &iflags);
         auto return_type = il2cpp_method_get_return_type(method);
         auto return_class = il2cpp_class_from_type(return_type);
         bool isStatic = flags & METHOD_ATTRIBUTE_STATIC;
-
-        out << repeat("\t", namespace_count) << "\t// Real Return Type: " << il2cpp_class_get_name(return_class) << "\n";
-        out << repeat("\t", namespace_count) << "\t" << (isStatic ? "static " : "") << parseType(il2cpp_class_get_name(return_class)) << " " << il2cpp_method_get_name(method) << "(";
-        out << (isStatic ? "" : "void* obj, ");
-
         auto param_count = il2cpp_method_get_param_count(method);
+        std::string returnType = parseType(il2cpp_class_get_name(return_class));
+
+        out << repeat("\t", namespace_count) << "\t// " << il2cpp_class_get_name(return_class) << " " << il2cpp_method_get_name(method) << "(";
+        for (int i = 0; i < param_count; ++i) {
+            auto param = il2cpp_method_get_param(method, i);
+            auto attrs = param->attrs;
+
+            auto parameter_class = il2cpp_class_from_type(param);
+            out << il2cpp_class_get_name(parameter_class) << " " << il2cpp_method_get_param_name(method, i);
+            out << ", ";
+        }
+
+        if (param_count > 0) {
+            out.seekp(-2, out.cur);
+        }
+
+        out << ")\n";
+
+        out << repeat("\t", namespace_count) << "\tstatic " << returnType << " " << formatName(il2cpp_method_get_name(method)) << "(";
+        out << (isStatic ? "" : (param_count > 0 ? "void* obj, " : "void* obj"));
+        
         for (int i = 0; i < param_count; ++i) {
             auto param = il2cpp_method_get_param(method, i);
             auto attrs = param->attrs;
             
             auto parameter_class = il2cpp_class_from_type(param);
-            out << il2cpp_class_get_name(parameter_class) << " " << il2cpp_method_get_param_name(method, i);
+            out << parseType(il2cpp_class_get_name(parameter_class)) << " " << il2cpp_method_get_param_name(method, i);
             out << ", ";
         }
 
@@ -200,55 +230,32 @@ void dump_method(Il2CppClass* klass, std::ofstream& out) {
 		
         out << ") {\n";
 
-		out << repeat("\t", namespace_count) << "\t\til2cpp_runtime_invoke(getMethod(\"" << il2cpp_method_get_name(method) << "\"), " << (isStatic ? "getStaticObject()" : "obj") << ", ";
-		for(int i = 0; i < param_count; ++i) {
-			auto param = il2cpp_method_get_param(method, i);
-			auto attrs = param->attrs;
-			auto parameter_class = il2cpp_class_from_type(param);
-			out << parseType(il2cpp_method_get_param_name(method, i));
-			out << ", ";
-		}
+        size_t args_size = 0;
+        for (int i = 0; i < param_count; i++) {
+            auto param = il2cpp_method_get_param(method, i);
+            auto param_class = il2cpp_class_from_type(param);
+            args_size += il2cpp_class_instance_size(param_class);
+        }
 
-		out.seekp(-2, out.cur);
-		out << ");\n";
+		out << repeat("\t", namespace_count) << "void** args = (void**)malloc(" << args_size << ");\n";
+        for (int i = 0; i < param_count; i++) {
+            auto param = il2cpp_method_get_param(method, i);
+            auto param_class = il2cpp_class_from_type(param);
+            
+            out << repeat("\t", namespace_count) << "args[" << i << "] = (void*)" << il2cpp_method_get_param_name(method, i) << ";\n";
+        }
+
+		out << repeat("\t", namespace_count) << "\t\t" 
+            << (returnType != "void" ? ("return " + (returnType != "Il2CppObject*" ? "*((" + returnType + ") *" : "")) : "")
+            << (returnType != "Il2CppObject*" ? "il2cpp_object_unbox(" : "") 
+            << "il2cpp_runtime_invoke(getMethod(\"" << il2cpp_method_get_name(method) << "\", " << param_count << "), "
+            << (isStatic ? "getStaticObject()" : "obj")
+            << ", args, nullptr"
+            << (returnType != "Il2CppObject*" ? ")" : "")
+            << (returnType != "void" ? ")" : "")
+		    << ");\n";
 		
 		out << repeat("\t", namespace_count) << "\t}\n\n";
-    }
-}
-
-void dump_property(Il2CppClass* klass, std::ofstream& out) {
-    void* iter = nullptr;
-    const char* namespace_ = il2cpp_class_get_namespace(klass);
-    std::vector<std::string> namespace_vec;
-    std::stringstream ss(namespace_);
-    std::string item;
-    while (std::getline(ss, item, '.')) {
-        namespace_vec.push_back(item);
-    }
-
-    int namespace_count = (int)namespace_vec.size();
-
-    while (auto prop_const = il2cpp_class_get_properties(klass, &iter)) {
-        auto prop = const_cast<PropertyInfo*>(prop_const);
-        auto get = il2cpp_property_get_get_method(prop);
-        auto set = il2cpp_property_get_set_method(prop);
-        auto prop_name = il2cpp_property_get_name(prop);
-
-        Il2CppClass* prop_class = nullptr;
-        uint32_t iflags = 0;
-        if (get) {
-            out << repeat("\t", namespace_count) << "\t" << parseType(prop_name) << " get_" << prop_name << "() {" << "\n";
-            out << repeat("\t", namespace_count) << "\t\treturn il2cpp_property_get_get_method(getProperty(), \"" << prop_name << "\");" << "\n";
-            out << repeat("\t", namespace_count) << "\t}" << "\n";
-        }
-        else if (set) {
-            auto param = il2cpp_method_get_param(set, 0);
-            prop_class = il2cpp_class_from_type(param);
-
-            out << repeat("\t", namespace_count) << "\tvoid set_" << prop_name << "(" << parseType(prop_name) << " value) {";
-            out << repeat("\t", namespace_count) << "\t\treturn il2cpp_property_get_set_method(getProperty(), \"" << prop_name << "\");";
-            out << repeat("\t", namespace_count) << "\t}";
-        }
     }
 }
 
@@ -270,13 +277,20 @@ void dump_field(Il2CppClass *klass, std::ofstream& out) {
         auto attrs = il2cpp_field_get_flags(field);
         auto field_type = il2cpp_field_get_type(field);
         auto field_class = il2cpp_class_from_type(field_type);
-
+        auto field_class_name = il2cpp_class_get_name(field_class);
         bool isStatic = attrs & FIELD_ATTRIBUTE_STATIC;
-        out << repeat("\t", namespace_count) << "\tstatic void* " << il2cpp_field_get_name(field) << "(" << (isStatic ? "" : "Il2CppObject* obj") << ") {" << "\n";
-        out << repeat("\t", namespace_count) << "\t\tvoid* res;" << "\n";
-        out << repeat("\t", namespace_count) << "\t\til2cpp_field_get_value(" << (isStatic ? "getStaticObject()" : "obj") << ", getField(\"" << il2cpp_field_get_name(field) << "\"), res));" << "\n";
-		out << repeat("\t", namespace_count) << "\t\treturn res;" << "\n";
-        out << repeat("\t", namespace_count) << "\t}" << "\n";
+		
+        std::string returnType = parseType(field_class_name);
+		out << repeat("\t", namespace_count) << "\t// " << il2cpp_class_get_name(field_class) << " " << il2cpp_field_get_name(field) << ";\n";
+        out << repeat("\t", namespace_count) << "\tstatic " << returnType << " " << formatName(il2cpp_field_get_name(field)) << "(" << (isStatic ? "" : "Il2CppObject* obj") << ") {" << "\n";
+        out << repeat("\t", namespace_count) << "\t\treturn " << (returnType != "Il2CppObject*" ? "*((" + returnType + ") *" : "")
+            << (returnType != "Il2CppObject*" ? "il2cpp_object_unbox(" : "") 
+            << "il2cpp_field_get_value_object(getField(\"" 
+            << il2cpp_field_get_name(field) << "\"), " 
+            << (isStatic ? "getStaticObject()" : "obj") 
+            << (returnType != "Il2CppObject*" ? ")" : "") 
+            << ");" << "\n"
+            << repeat("\t", namespace_count) << "\t}\n\n";
     }
 }
 
@@ -311,9 +325,6 @@ void dump_type(const Il2CppType *type, const char* outDir) {
 		LOGE("Failed to open %s", outPath.c_str());
 		return;
     }
-    else {
-        LOGI("Oppenned file !");
-    }
 
     out << "#pragma once" << "\n";
     out << "#include <IL2Cpp/Il2Cpp.h>" << "\n";
@@ -340,38 +351,47 @@ void dump_type(const Il2CppType *type, const char* outDir) {
     out << il2cpp_class_get_name(klass) << " {" << "\n";
     out << repeat("\t", namespace_vec.size()) << "public:" << "\n";
 
-    out << repeat("\t", namespace_vec.size()) << "\tstatic IL2CppClass* getClass() { " << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_from_name(\"Assembly-CSharp.dll\", \"" << namespace_ << "\", \"" << il2cpp_class_get_name(klass) << "\");" << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n";
+    out << repeat("\t", namespace_count) << "\tstatic const Il2CppAssembly* getAssembly() {\n";
+	out << repeat("\t", namespace_count) << "\t\treturn il2cpp_domain_assembly_open(il2cpp_domain_get(), \"Assembly-CSharp.dll\");\n";
+    out << repeat("\t", namespace_vec.size()) << "\t}\n\n";
 
-    out << repeat("\t", namespace_vec.size()) << "\tstatic IL2CppType* getType() { " << "\n";
+    out << repeat("\t", namespace_count) << "\tstatic const Il2CppImage* getImage() {\n";
+    out << repeat("\t", namespace_count) << "\t\treturn il2cpp_assembly_get_image(getAssembly());\n";
+    out << repeat("\t", namespace_vec.size()) << "\t}\n\n";
+
+    out << repeat("\t", namespace_vec.size()) << "\tstatic Il2CppClass* getClass() { " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_from_name(getImage(), \"" << namespace_ << "\", \"" << il2cpp_class_get_name(klass) << "\");" << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n\n";
+
+    out << repeat("\t", namespace_vec.size()) << "\tstatic const Il2CppType* getType() { " << "\n";
     out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_get_type(getClass());" << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n\n";
 
     out << repeat("\t", namespace_vec.size()) << "\tstatic Il2CppObject* getStaticObject() { " << "\n";
     out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_type_get_object(getType());" << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n\n";
 
     out << repeat("\t", namespace_vec.size()) << "\tstatic FieldInfo* getField(const char* name) { " << "\n";
     out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_get_field_from_name(getClass(), name);" << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n\n";
 
-    out << repeat("\t", namespace_vec.size()) << "\tstatic PropertyInfo* getProperty(const char* name) { " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\tstatic const PropertyInfo* getProperty(const char* name) { " << "\n";
     out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_get_property_from_name(getClass(), name);" << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n\n";
 
-    out << repeat("\t", namespace_vec.size()) << "\tstatic MethodInfo* getMethod(const char* name) { " << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_get_method_from_name(getClass(), name);" << "\n";
-    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\tstatic const MethodInfo* getMethod(const char* name, int argsCount) { " << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t\treturn il2cpp_class_get_method_from_name(getClass(), name, argsCount);" << "\n";
+    out << repeat("\t", namespace_vec.size()) << "\t} " << "\n\n";
 
     dump_field(klass, out);
-    dump_property(klass, out);
     dump_method(klass, out);
 
     for(int i = 0; i < namespace_vec.size(); i++) {
 		out << repeat("\t", namespace_vec.size() - i - 1);
-		out << "}";
+		out << "}\n";
 	}
+
+    out << "}";
 
     out.flush();
     out.close();
